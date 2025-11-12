@@ -1,0 +1,68 @@
+# Environment variables - NEVER commit this file!
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Trading data (if you create any)
+trades.db
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Session/cache files
+.session
+session.json
+*.session
+
+# Private keys and credentials
+*private_key*
+*credentials*
+*.pem
+*.key
