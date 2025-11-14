@@ -1,9 +1,10 @@
 import asyncio
 import os
+import sys
 from typing import Optional, Dict, List, Tuple
 from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs, OrderType, OpenOrderParams
+from py_clob_client.clob_types import OrderArgs, OrderType, OpenOrderParams, ApiCreds
 from py_clob_client.order_builder.constants import BUY, SELL
 import time
 from datetime import datetime
@@ -11,14 +12,28 @@ from decimal import Decimal, ROUND_HALF_UP
 import requests
 import json
 
+# Fix Windows console encoding to support Unicode characters
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except:
+        pass
+
 load_dotenv()
 
-def round_price(price: float, precision: int) -> float:
+def round_price(price: float, precision: int, grid_spacing: float) -> float:
     """
-    Round price using ROUND_HALF_UP to ensure consistent spacing
-    (avoids Python's banker's rounding which rounds to nearest even)
+    Round price to grid spacing increments
+    Examples with 0.01 spacing: $0.455 → $0.46, $0.445 → $0.45
+    Examples with 0.02 spacing: $0.455 → $0.46, $0.435 → $0.44
+    Uses ROUND_HALF_UP for consistent rounding behavior
     """
-    decimal_price = Decimal(str(price))
+    # Round to grid_spacing increments
+    rounded = round(price / grid_spacing) * grid_spacing
+
+    # Apply precision formatting
+    decimal_price = Decimal(str(rounded))
     quantize_format = Decimal(10) ** -precision
     return float(decimal_price.quantize(quantize_format, rounding=ROUND_HALF_UP))
 
@@ -64,20 +79,70 @@ class PolymarketGridBot:
             raise ValueError(f"RANGE_MAX must be between 0 and 1, got {range_max}")
         if range_min >= range_max:
             raise ValueError(f"RANGE_MIN must be less than RANGE_MAX, got {range_min} >= {range_max}")
+
+        # Validate price precision matches grid spacing
+        min_precision_needed = len(str(grid_spacing).split('.')[-1])
+        if price_precision < min_precision_needed:
+            raise ValueError(
+                f"PRICE_PRECISION={price_precision} too low for GRID_SPACING={grid_spacing}. "
+                f"Need at least {min_precision_needed} decimals. "
+                f"Example: GRID_SPACING=0.01 needs PRICE_PRECISION=2, "
+                f"GRID_SPACING=0.001 needs PRICE_PRECISION=3"
+            )
         # Initialize Polymarket CLOB client
-        self.client = ClobClient(
-            host="https://clob.polymarket.com",
-            key=private_key,
-            chain_id=137,  # Polygon mainnet
-        )
+        # Get proxy wallet address from environment or use None for direct wallet trading
+        proxy_wallet = os.getenv("POLYMARKET_PROXY_WALLET", None)
+
+        # Determine if using proxy wallet
+        # signature_type=2 for SAFE wallets (Polymarket proxy wallets)
+        # signature_type=1 for Magic/email wallets
+        # signature_type=0 or None for direct EOA (Externally Owned Account)
+        if proxy_wallet:
+            print(f"[OK] Using proxy wallet (SAFE): {proxy_wallet}")
+            self.client = ClobClient(
+                host="https://clob.polymarket.com",
+                key=private_key,
+                chain_id=137,  # Polygon mainnet
+                signature_type=2,  # Required for SAFE wallets (Polymarket proxy)
+                funder=proxy_wallet,  # The address holding your funds
+            )
+        else:
+            print(f"[OK] Using direct EOA wallet")
+            self.client = ClobClient(
+                host="https://clob.polymarket.com",
+                key=private_key,
+                chain_id=137,  # Polygon mainnet
+            )
 
         # Set up API credentials for authenticated requests
+        # Option 1: Use API credentials from environment (RECOMMENDED for proxy wallet trading)
+        api_key = os.getenv("POLYMARKET_API_KEY")
+        api_secret = os.getenv("POLYMARKET_API_SECRET")
+        api_passphrase = os.getenv("POLYMARKET_API_PASSPHRASE")
+
         try:
-            self.client.set_api_creds(self.client.create_or_derive_api_creds())
-            print("✓ API credentials configured")
+            if api_key and api_secret and api_passphrase:
+                # Use provided API credentials (proxy wallet)
+                print("[OK] Using API credentials from environment")
+                api_creds = ApiCreds(
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    api_passphrase=api_passphrase,
+                )
+                self.client.set_api_creds(api_creds)
+                print("[OK] API credentials configured successfully")
+            else:
+                # Option 2: Try to derive from private key (may not work for all wallets)
+                print("[WARNING] No API credentials in .env, attempting to derive from private key...")
+                self.client.set_api_creds(self.client.create_or_derive_api_creds())
+                print("[OK] API credentials derived from private key")
         except Exception as e:
-            print(f"⚠ Warning: Could not set API credentials: {e}")
-            print("  Some features may not work without authentication")
+            print(f"[ERROR] Could not set API credentials: {e}")
+            print("  Please add your Polymarket API credentials to .env:")
+            print("  POLYMARKET_API_KEY=your_api_key")
+            print("  POLYMARKET_API_SECRET=your_api_secret")
+            print("  POLYMARKET_API_PASSPHRASE=your_api_passphrase")
+            raise
 
         self.token_id = token_id
         self.grid_levels = grid_levels
@@ -308,6 +373,7 @@ class PolymarketGridBot:
         - Skip any orders outside RANGE_MIN to RANGE_MAX
         """
         orders = []
+        placed_prices = set()  # Track prices to prevent duplicates
 
         # Calculate order size
         size_usd = self.calculate_order_size(mid_price)
@@ -319,7 +385,7 @@ class PolymarketGridBot:
         for i in range(self.grid_levels):
             # Calculate each price directly from mid_price to avoid cumulative rounding errors
             raw_price = mid_price - ((i + 1) * self.grid_spacing)
-            price = round_price(raw_price, self.price_precision)
+            price = round_price(raw_price, self.price_precision, self.grid_spacing)
 
             # DEBUG: Show calculation (remove this later)
             print(f"  [DEBUG] Level {i}: {mid_price:.6f} - {(i+1) * self.grid_spacing:.6f} = {raw_price:.6f} → rounds to ${price:.{self.price_precision}f}")
@@ -336,6 +402,12 @@ class PolymarketGridBot:
             # Price validation
             if price < 0.01:
                 continue
+
+            # Skip duplicate prices
+            if price in placed_prices:
+                print(f"  [FILTERED] ${price:.{self.price_precision}f} duplicate price, skipping")
+                continue
+            placed_prices.add(price)
 
             # Check if we can place this order
             if not self.can_place_order(BUY, mid_price):
@@ -361,7 +433,7 @@ class PolymarketGridBot:
         # Generate SELL orders - start above current price, go UP
         for i in range(self.grid_levels):
             # Calculate each price directly from mid_price to avoid cumulative rounding errors
-            price = round_price(mid_price + ((i + 1) * self.grid_spacing), self.price_precision)
+            price = round_price(mid_price + ((i + 1) * self.grid_spacing), self.price_precision, self.grid_spacing)
 
             # Skip if outside range
             if price > self.range_max or price <= mid_price:
@@ -370,6 +442,12 @@ class PolymarketGridBot:
             # Price validation
             if price > 0.99:
                 continue
+
+            # Skip duplicate prices
+            if price in placed_prices:
+                print(f"  [FILTERED] ${price:.{self.price_precision}f} duplicate price, skipping")
+                continue
+            placed_prices.add(price)
 
             # Check if we can place this order
             if not self.can_place_order(SELL, mid_price):
@@ -703,7 +781,7 @@ class PolymarketGridBot:
 
                         orders.append({
                             'side': SELL,
-                            'price': round_price(sell_price, self.price_precision),
+                            'price': round_price(sell_price, self.price_precision, self.grid_spacing),
                             'size': round(size, 2),
                             'level': 0
                         })
@@ -727,7 +805,7 @@ class PolymarketGridBot:
 
                         orders.append({
                             'side': BUY,
-                            'price': round_price(buy_price, self.price_precision),
+                            'price': round_price(buy_price, self.price_precision, self.grid_spacing),
                             'size': round(size, 2),
                             'level': 0
                         })
