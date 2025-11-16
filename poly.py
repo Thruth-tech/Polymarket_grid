@@ -736,87 +736,48 @@ class PolymarketGridBot:
                 print(f"⚠ Could not update position from API: {e}")
                 # Use tracked position instead
 
-            # === RANGE GRID (PROFIT-TAKING) ===
-            # When BUY fills → place SELL above it
-            # When SELL fills → place BUY below it
+            # === RANGE GRID (CONTINUOUS MAINTENANCE) ===
+            # Maintains full grid at all times by replacing any missing orders
 
             # Print status
             self.print_status(mid_price, (self.range_min + self.range_max) / 2)
 
-            # Check if this is first cycle (no grid placed yet)
-            if not self.range_grid_levels:
-                print("\n🎯 First cycle: Placing initial range grid...")
-                # Generate all grid orders for the first time
-                orders = self.generate_range_grid_orders(mid_price)
-                # Mark that we've placed the initial grid
-                self.range_grid_levels = orders.copy()
-            else:
-                # Subsequent cycles: profit-taking mode
-                print("\n🔄 Checking for filled orders...")
-                orders = []
-
-                if not filled_orders:
-                    print("✓ No fills detected, grid still active")
-                    return
-
-                # For each filled order, place opposite side to take profit
-                print(f"💰 {len(filled_orders)} order(s) filled - placing profit-taking orders...")
-
+            # Report any filled orders
+            if filled_orders:
+                print(f"\n💰 {len(filled_orders)} order(s) filled this cycle:")
                 for filled in filled_orders:
-                    if filled['side'] == BUY:
-                        # BUY filled → place SELL above it to take profit
-                        sell_price = filled['price'] + self.grid_spacing
+                    direction = "BUY" if filled['side'] == BUY else "SELL"
+                    print(f"   ✓ {direction} @ ${filled['price']:.{self.price_precision}f} | {filled['size']:.2f} shares")
 
-                        # Validate within range
-                        if sell_price > self.range_max:
-                            print(f"   ⚠ SELL @ ${sell_price:.3f} exceeds range max ${self.range_max:.3f}, skipping")
-                            continue
+            # Get currently active order prices to avoid duplicates
+            print("\n🔄 Checking grid status...")
+            active_buy_prices = set()
+            active_sell_prices = set()
+            for order_id, order in self.active_orders.items():
+                if order['side'] == BUY:
+                    active_buy_prices.add(order['price'])
+                else:
+                    active_sell_prices.add(order['price'])
 
-                        # Calculate size for SELL order
-                        size = self.order_size_usd / sell_price
-                        if size < self.min_order_size:
-                            continue
-                        if size > self.max_order_size:
-                            size = self.max_order_size
+            # Generate what the full grid SHOULD look like
+            target_grid = self.generate_range_grid_orders(mid_price)
 
-                        orders.append({
-                            'side': SELL,
-                            'price': round_price(sell_price, self.price_precision, self.grid_spacing),
-                            'size': round(size, 2),
-                            'level': 0
-                        })
-                        print(f"   📈 BUY @ ${filled['price']:.{self.price_precision}f} filled → placing SELL @ ${sell_price:.{self.price_precision}f} (+${self.grid_spacing:.{self.price_precision}f})")
+            # Find missing orders (orders that should exist but don't)
+            orders = []
+            for target_order in target_grid:
+                target_price = target_order['price']
 
-                    else:  # SELL filled
-                        # SELL filled → place BUY below it to rebuy
-                        buy_price = filled['price'] - self.grid_spacing
+                if target_order['side'] == BUY:
+                    if target_price not in active_buy_prices:
+                        orders.append(target_order)
+                        print(f"  🟢 Missing BUY @ ${target_price:.{self.price_precision}f} - will place")
+                else:  # SELL
+                    if target_price not in active_sell_prices:
+                        orders.append(target_order)
+                        print(f"  🔴 Missing SELL @ ${target_price:.{self.price_precision}f} - will place")
 
-                        # Validate within range
-                        if buy_price < self.range_min:
-                            print(f"   ⚠ BUY @ ${buy_price:.3f} below range min ${self.range_min:.3f}, skipping")
-                            continue
-
-                        # Calculate size for BUY order
-                        size = self.order_size_usd / buy_price
-                        if size < self.min_order_size:
-                            continue
-                        if size > self.max_order_size:
-                            size = self.max_order_size
-
-                        orders.append({
-                            'side': BUY,
-                            'price': round_price(buy_price, self.price_precision, self.grid_spacing),
-                            'size': round(size, 2),
-                            'level': 0
-                        })
-                        print(f"   📉 SELL @ ${filled['price']:.{self.price_precision}f} filled → placing BUY @ ${buy_price:.{self.price_precision}f} (-${self.grid_spacing:.{self.price_precision}f})")
-
-                if not orders:
-                    print("⚠ No profit-taking orders to place (all outside range)")
-                    return
-
-            if len(orders) == 0:
-                print("⚠ No orders to place (position limits or invalid prices)")
+            if not orders:
+                print("✓ Grid is complete - all orders active")
                 return
 
             print(f"\n📝 Placing {len(orders)} new orders...")
