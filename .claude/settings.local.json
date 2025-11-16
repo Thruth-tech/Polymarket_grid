@@ -13,7 +13,9 @@
       "Bash(dir /b)",
       "Bash(mv:*)",
       "WebFetch(domain:debank.com)",
-      "Bash(git init:*)"
+      "Bash(git init:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash drop:*)"
     ],
     "deny": [],
     "ask": []
