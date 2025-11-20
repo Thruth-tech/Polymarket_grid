@@ -381,22 +381,21 @@ class PolymarketGridBot:
             print("⚠ Max position reached, no new orders")
             return orders
 
-        # Generate BUY orders - start below current price, go DOWN
-        for i in range(self.grid_levels):
-            # Calculate each price directly from mid_price to avoid cumulative rounding errors
-            raw_price = mid_price - ((i + 1) * self.grid_spacing)
-            price = round_price(raw_price, self.price_precision, self.grid_spacing)
+        # Generate BUY orders - start at rounded current price, go DOWN
+        # Calculate the grid line at or just below current price
+        base_price = round_price(mid_price, self.price_precision, self.grid_spacing)
 
-            # DEBUG: Show calculation (remove this later)
-            print(f"  [DEBUG] Level {i}: {mid_price:.6f} - {(i+1) * self.grid_spacing:.6f} = {raw_price:.6f} → rounds to ${price:.{self.price_precision}f}")
+        # Ensure we're below the mid_price for BUY orders
+        if base_price >= mid_price:
+            base_price -= self.grid_spacing
+
+        for i in range(self.grid_levels):
+            # Calculate each price from base_price to avoid cumulative rounding errors
+            raw_price = base_price - (i * self.grid_spacing)
+            price = round_price(raw_price, self.price_precision, self.grid_spacing)
 
             # Skip if outside range
             if price < self.range_min or price >= mid_price:
-                # DEBUG: Show why filtered (remove this later)
-                if price >= mid_price:
-                    print(f"  [FILTERED] ${price:.{self.price_precision}f} >= ${mid_price:.{self.price_precision}f} (too close to mid)")
-                elif price < self.range_min:
-                    print(f"  [FILTERED] ${price:.{self.price_precision}f} < ${self.range_min:.{self.price_precision}f} (below range)")
                 continue
 
             # Price validation
@@ -430,10 +429,18 @@ class PolymarketGridBot:
                 'level': -i
             })
 
-        # Generate SELL orders - start above current price, go UP
+        # Generate SELL orders - start at rounded current price + 1 spacing, go UP
+        # Calculate the grid line at or just above current price
+        base_price = round_price(mid_price, self.price_precision, self.grid_spacing)
+
+        # Ensure we're above the mid_price for SELL orders
+        if base_price <= mid_price:
+            base_price += self.grid_spacing
+
         for i in range(self.grid_levels):
-            # Calculate each price directly from mid_price to avoid cumulative rounding errors
-            price = round_price(mid_price + ((i + 1) * self.grid_spacing), self.price_precision, self.grid_spacing)
+            # Calculate each price from base_price to avoid cumulative rounding errors
+            raw_price = base_price + (i * self.grid_spacing)
+            price = round_price(raw_price, self.price_precision, self.grid_spacing)
 
             # Skip if outside range
             if price > self.range_max or price <= mid_price:
