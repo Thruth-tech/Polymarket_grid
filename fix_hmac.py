@@ -14,9 +14,22 @@ import re
 def find_hmac_file():
     """Find the hmac.py file in the installed py-clob-client package"""
     import py_clob_client
+    import glob
     package_path = os.path.dirname(py_clob_client.__file__)
-    hmac_path = os.path.join(package_path, 'headers', 'hmac.py')
-    return hmac_path if os.path.exists(hmac_path) else None
+
+    # Try common locations
+    possible_paths = [
+        os.path.join(package_path, 'signing', 'hmac.py'),  # Newer version
+        os.path.join(package_path, 'headers', 'hmac.py'),  # Older version
+    ]
+
+    for path in possible_paths:
+        if os.path.exists(path):
+            return path
+
+    # Search recursively as fallback
+    found = glob.glob(os.path.join(package_path, '**', 'hmac.py'), recursive=True)
+    return found[0] if found else None
 
 def patch_hmac_file(hmac_path):
     """Apply the fix to hmac.py"""
